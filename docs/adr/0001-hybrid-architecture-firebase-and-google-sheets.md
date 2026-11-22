@@ -1,0 +1,3 @@
+# Hybrid Architecture with Firebase Realtime Database and Google Sheets
+
+We need a zero-server, mobile-friendly auction system deployed to GitHub Pages (`Dyotak.me/auction`) that supports live wheel synchronization and real-time team purse updates. We decided to use Firebase Realtime Database to broadcast wheel spins and player state from the Admin panel to all Viewers in real time, and fetch team purse data directly from published Google Sheets so non-technical organizers can update expenses live in spreadsheets. This avoids the cost and maintenance of an application backend while delivering real-time interactivity.
