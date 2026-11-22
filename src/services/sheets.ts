@@ -9,6 +9,29 @@ export interface SheetFetchResult {
   error?: string;
 }
 
+// Known GIDs for this specific published Google Sheet
+const PUBLISHED_GIDS = {
+  men: '477299999',
+  women: '828496356',
+};
+
+// Known team colors map
+const TEAM_COLORS: Record<string, string> = {
+  'RGC KINGS': '#6366f1',
+  'RGC CHARGERS': '#0284c7',
+  'RGC KNIGHT RIDERS': '#7e22ce',
+  'RGC SUNRISERS': '#ea580c',
+  'RGC INDIANS': '#2563eb',
+  'RGC SUPER KINGS': '#eab308',
+  'RGC SUPERGIANTS': '#0d9488',
+  'RGC CAPITALS': '#06b6d4',
+  'RGC CHALLENGERS': '#dc2626',
+  'RGC TITANS': '#1e3a8a',
+  'RGC ROYALS': '#ec4899',
+  'RGC WARRIORZ': '#a855f7',
+  'RGC GIANTS': '#f97316',
+};
+
 // Simple CSV line parser handling quotes
 function parseCSV(text: string): string[][] {
   const lines: string[][] = [];
@@ -64,25 +87,27 @@ function parseNumber(val: string | undefined): number {
 
 export async function fetchPurseData(tournament: 'men' | 'women'): Promise<SheetFetchResult> {
   const config = getAppConfig();
-  const sheetName = tournament === 'men' ? 'Purse Men' : 'Purse Women';
   const defaultTeams = tournament === 'men' ? MOCK_MEN_TEAMS : MOCK_WOMEN_TEAMS;
+  const sheetInput = config.googleSheetId || 'https://docs.google.com/spreadsheets/d/e/2PACX-1vQKkdrbfGjDEoj-jtZRaQqg9Mp-DIUk4FjcEIstTijXlfhBLQjUiK_pkvx9OWVHvZsJ26pZC2vYRrMw/pubhtml';
 
-  if (!config.googleSheetId) {
-    return {
-      teams: defaultTeams,
-      source: 'mock-data',
-      lastUpdated: new Date().toLocaleTimeString(),
-    };
+  let fetchUrl = '';
+
+  // Determine if input is a published URL (2PACX-...) or standard spreadsheet ID
+  if (sheetInput.includes('2PACX-') || sheetInput.includes('/pub')) {
+    const gid = PUBLISHED_GIDS[tournament];
+    const base = sheetInput.split('/pub')[0];
+    fetchUrl = `${base}/pub?gid=${gid}&single=true&output=csv`;
+  } else {
+    const sheetTabName = tournament === 'men' ? 'Purse Men' : 'Purse Women';
+    fetchUrl = `https://docs.google.com/spreadsheets/d/${sheetInput}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(
+      sheetTabName
+    )}`;
   }
 
   try {
-    const url = `https://docs.google.com/spreadsheets/d/${config.googleSheetId}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(
-      sheetName
-    )}`;
-
-    const response = await fetch(url);
+    const response = await fetch(fetchUrl);
     if (!response.ok) {
-      throw new Error(`HTTP error ${response.status}: Failed to fetch sheet tab '${sheetName}'`);
+      throw new Error(`HTTP error ${response.status}: Failed to fetch sheet data`);
     }
 
     const csvText = await response.text();
@@ -92,15 +117,15 @@ export async function fetchPurseData(tournament: 'men' | 'women'): Promise<Sheet
       throw new Error('Sheet data too short or empty');
     }
 
-    const teams = parseTeamGridFromSheet(rows, defaultTeams);
+    const parsedTeams = parseTeamsFromCSV(rows);
 
     return {
-      teams: teams.length > 0 ? teams : defaultTeams,
+      teams: parsedTeams.length > 0 ? parsedTeams : defaultTeams,
       source: 'google-sheets',
       lastUpdated: new Date().toLocaleTimeString(),
     };
   } catch (err: unknown) {
-    console.warn(`Failed to fetch Google Sheet for ${sheetName}:`, err);
+    console.warn(`Failed to fetch Google Sheet for ${tournament}:`, err);
     return {
       teams: defaultTeams,
       source: 'mock-data',
@@ -110,59 +135,98 @@ export async function fetchPurseData(tournament: 'men' | 'women'): Promise<Sheet
   }
 }
 
-// Parses grid of teams (e.g. 3 teams across in columns A-C, D-F, G-I, repeated vertically)
-function parseTeamGridFromSheet(rows: string[][], fallbackTeams: TeamPurse[]): TeamPurse[] {
+// Dynamically extracts all RGC teams and their slots from the sheet grid
+function parseTeamsFromCSV(rows: string[][]): TeamPurse[] {
   const teams: TeamPurse[] = [];
 
-  // Find all team header positions (cells containing "RGC" or team names)
   for (let r = 0; r < rows.length; r++) {
     for (let c = 0; c < rows[r].length; c++) {
       const cell = rows[r][c]?.trim();
-      if (!cell) continue;
+      if (!cell || !cell.toUpperCase().startsWith('RGC ')) continue;
 
-      const matchedTeam = fallbackTeams.find((ft) =>
-        cell.toLowerCase().includes(ft.name.toLowerCase().replace('rgc ', ''))
-      );
+      const rawTeamName = cell.replace(/[\s\-]+$/, '');
+      const teamId = rawTeamName.toLowerCase().replace(/[^a-z0-9]+/g, '-');
 
-      if (matchedTeam && !teams.some((t) => t.id === matchedTeam.id)) {
-        // Found a team block at (r, c)
-        // Header row has team name
-        // r+1 is usually CAT, BID AMOUNT, PLAYER NAME
-        // r+2 to r+12 are slots
-        const slots: TeamSlot[] = [];
-        let totalSpent = 0;
+      // Avoid duplicates
+      if (teams.some((t) => t.id === teamId)) continue;
 
-        // Scan subsequent rows under this column
-        for (let rowIdx = r + 1; rowIdx < Math.min(r + 18, rows.length); rowIdx++) {
-          const colCat = rows[rowIdx][c]?.trim();
-          const colBid = parseNumber(rows[rowIdx][c + 1]);
-          const colPlayer = rows[rowIdx][c + 2]?.trim();
+      const slots: TeamSlot[] = [];
+      let totalSpent = 0;
+      let remainingPurse = 100000;
 
-          if (!colCat) continue;
+      // Scan downwards under column c
+      for (let rowIdx = r + 1; rowIdx < rows.length; rowIdx++) {
+        if (c >= rows[rowIdx].length) continue;
 
-          if (colCat.toUpperCase().includes('TOTAL')) {
-            if (colBid > 0) totalSpent = colBid;
-          } else if (['A', 'B', 'BOWLER', 'BOWLERS', 'C', 'D', 'E', 'F', 'CHIT'].includes(colCat.toUpperCase())) {
-            slots.push({
-              category: colCat,
-              playerName: colPlayer || '',
-              bidAmount: colBid,
-            });
-            totalSpent += colBid;
+        // Stop if we hit another team in the same column
+        if (rowIdx > r + 1 && rows[rowIdx][c]?.trim().toUpperCase().startsWith('RGC ')) {
+          break;
+        }
+
+        const catCell = rows[rowIdx][c]?.trim() || '';
+        const bidCell = rows[rowIdx][c + 1]?.trim() || '';
+        const playerCell = rows[rowIdx][c + 2]?.trim() || '';
+
+        // Check for TOTAL and REMAINING cells across adjacent columns
+        const rowSlice = rows[rowIdx].slice(c, c + 5);
+        for (let i = 0; i < rowSlice.length; i++) {
+          const val = rowSlice[i]?.trim().toUpperCase();
+          if (val === 'TOTAL') {
+            for (let j = i + 1; j < rowSlice.length; j++) {
+              const num = parseNumber(rowSlice[j]);
+              if (num > 0) {
+                totalSpent = num;
+                break;
+              }
+            }
+          }
+          if (val === 'REMAINING' || val === 'REMAINING PURSE') {
+            for (let j = i + 1; j < rowSlice.length; j++) {
+              const num = parseNumber(rowSlice[j]);
+              if (num > 0) {
+                remainingPurse = num;
+                break;
+              }
+            }
           }
         }
 
-        if (slots.length > 0) {
-          teams.push({
-            ...matchedTeam,
-            slots,
-            spent: totalSpent,
-            remaining: Math.max(0, matchedTeam.totalPurse - totalSpent),
+        // Check if category row
+        const upperCat = catCell.toUpperCase();
+        if (['A', 'B', 'BOWLER', 'BOWLERS', 'C', 'D', 'E', 'F', 'CHIT'].includes(upperCat)) {
+          const bidAmount = parseNumber(bidCell);
+          slots.push({
+            category: catCell,
+            playerName: playerCell,
+            bidAmount,
           });
         }
+
+        // Stop scanning after CHIT
+        if (upperCat === 'CHIT') {
+          break;
+        }
       }
+
+      // If spent wasn't explicitly populated from TOTAL row, sum the slot bids
+      if (totalSpent === 0 && slots.length > 0) {
+        totalSpent = slots.reduce((sum, s) => sum + s.bidAmount, 0);
+        remainingPurse = Math.max(0, 100000 - totalSpent);
+      }
+
+      const teamColor = TEAM_COLORS[rawTeamName.toUpperCase()] || '#f59e0b';
+
+      teams.push({
+        id: teamId,
+        name: rawTeamName,
+        color: teamColor,
+        totalPurse: 100000,
+        spent: totalSpent,
+        remaining: remainingPurse,
+        slots,
+      });
     }
   }
 
-  return teams.length > 0 ? teams : fallbackTeams;
+  return teams;
 }

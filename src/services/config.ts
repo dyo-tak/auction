@@ -3,6 +3,9 @@ import { AppConfig } from '../types';
 const STORAGE_KEY = 'AUCTION_CUSTOM_CONFIG';
 const PASSCODE_KEY = 'AUCTION_ADMIN_AUTH';
 
+const DEFAULT_PUBLISHED_SHEET_URL =
+  'https://docs.google.com/spreadsheets/d/e/2PACX-1vQKkdrbfGjDEoj-jtZRaQqg9Mp-DIUk4FjcEIstTijXlfhBLQjUiK_pkvx9OWVHvZsJ26pZC2vYRrMw/pubhtml';
+
 export function getAppConfig(): AppConfig {
   const saved = localStorage.getItem(STORAGE_KEY);
   let customConfig: Partial<AppConfig> = {};
@@ -30,7 +33,7 @@ export function getAppConfig(): AppConfig {
 
   return {
     firebaseConfig,
-    googleSheetId: customConfig.googleSheetId || env.VITE_GOOGLE_SHEET_ID || '',
+    googleSheetId: customConfig.googleSheetId || env.VITE_GOOGLE_SHEET_ID || DEFAULT_PUBLISHED_SHEET_URL,
     adminPasscode: customConfig.adminPasscode || env.VITE_ADMIN_PASSCODE || 'auction2026',
   };
 }
