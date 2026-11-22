@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { TeamPurse } from '../../types';
-import { fetchPurseData } from '../../services/sheets';
+import { fetchPurseData, getCachedPurse } from '../../services/sheets';
 import { RefreshCw, Search, Users, Wallet, Trophy, CheckCircle, ExternalLink } from 'lucide-react';
 import { getAppConfig } from '../../services/config';
 
@@ -9,21 +9,26 @@ interface PurseViewProps {
 }
 
 export const PurseView: React.FC<PurseViewProps> = ({ tournament }) => {
-  const [teams, setTeams] = useState<TeamPurse[]>([]);
+  // Initialize immediately from local cache so the page NEVER flashes empty on refresh
+  const [teams, setTeams] = useState<TeamPurse[]>(() => getCachedPurse(tournament));
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
-  const [lastUpdated, setLastUpdated] = useState<string>('');
-  const [source, setSource] = useState<string>('mock-data');
+  const [lastUpdated, setLastUpdated] = useState<string>('Cached');
+  const [source, setSource] = useState<string>('google-sheets');
   const [searchQuery, setSearchQuery] = useState<string>('');
-  const isInitialLoad = useRef<boolean>(true);
+  const isMounted = useRef<boolean>(true);
 
-  const loadData = async (manual = false) => {
-    if (manual || isInitialLoad.current) {
+  // Sync with cached data whenever tournament tab changes
+  useEffect(() => {
+    setTeams(getCachedPurse(tournament));
+  }, [tournament]);
+
+  const loadData = async (showIndicator = false) => {
+    if (showIndicator) {
       setIsRefreshing(true);
     }
     try {
       const result = await fetchPurseData(tournament);
-      // Only update if we received valid teams
-      if (result.teams && result.teams.length > 0) {
+      if (isMounted.current && result.teams && result.teams.length > 0) {
         setTeams(result.teams);
         setLastUpdated(result.lastUpdated);
         setSource(result.source);
@@ -31,18 +36,24 @@ export const PurseView: React.FC<PurseViewProps> = ({ tournament }) => {
     } catch (e) {
       console.warn('Error refreshing purse:', e);
     } finally {
-      setIsRefreshing(false);
-      isInitialLoad.current = false;
+      if (isMounted.current && showIndicator) {
+        setIsRefreshing(false);
+      }
     }
   };
 
   useEffect(() => {
-    isInitialLoad.current = true;
-    loadData(true);
+    isMounted.current = true;
+    // Silent initial fetch (indicator = false so no flashing)
+    loadData(false);
     const interval = setInterval(() => {
-      loadData(false); // Silent background polling
+      loadData(false); // Silent 15s polling
     }, 15000);
-    return () => clearInterval(interval);
+
+    return () => {
+      isMounted.current = false;
+      clearInterval(interval);
+    };
   }, [tournament]);
 
   const filteredTeams = useMemo(() => {

@@ -9,6 +9,31 @@ export interface SheetFetchResult {
   error?: string;
 }
 
+const CACHE_KEY_PREFIX = 'PURSE_CACHE_V3_';
+
+export function getCachedPurse(tournament: 'men' | 'women'): TeamPurse[] {
+  try {
+    const saved = localStorage.getItem(`${CACHE_KEY_PREFIX}${tournament}`);
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed;
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return tournament === 'men' ? MOCK_MEN_TEAMS : MOCK_WOMEN_TEAMS;
+}
+
+export function setCachedPurse(tournament: 'men' | 'women', teams: TeamPurse[]): void {
+  try {
+    localStorage.setItem(`${CACHE_KEY_PREFIX}${tournament}`, JSON.stringify(teams));
+  } catch {
+    // ignore
+  }
+}
+
 // Known GIDs for this specific published Google Sheet
 const PUBLISHED_GIDS = {
   men: '477299999',
@@ -87,25 +112,36 @@ function parseNumber(val: string | undefined): number {
 
 export async function fetchPurseData(tournament: 'men' | 'women'): Promise<SheetFetchResult> {
   const config = getAppConfig();
-  const defaultTeams = tournament === 'men' ? MOCK_MEN_TEAMS : MOCK_WOMEN_TEAMS;
-  const sheetInput = config.googleSheetId || 'https://docs.google.com/spreadsheets/d/e/2PACX-1vQKkdrbfGjDEoj-jtZRaQqg9Mp-DIUk4FjcEIstTijXlfhBLQjUiK_pkvx9OWVHvZsJ26pZC2vYRrMw/pubhtml';
+  const cached = getCachedPurse(tournament);
+  const rawInput = (config.googleSheetId || '1q4KIQ4McbSTIHsKTEW3gaDG__tVBiG0lIXJOc5qGaEY').trim();
 
+  // Extract ID if a full Google Sheets URL is provided
+  let sheetId = rawInput;
+  const match = rawInput.match(/\/d\/([a-zA-Z0-9_-]+)/);
+  if (match) {
+    sheetId = match[1];
+  }
+
+  const timestamp = Date.now();
+  const gid = PUBLISHED_GIDS[tournament];
   let fetchUrl = '';
 
-  // Determine if input is a published URL (2PACX-...) or standard spreadsheet ID
-  if (sheetInput.includes('2PACX-') || sheetInput.includes('/pub')) {
-    const gid = PUBLISHED_GIDS[tournament];
-    const base = sheetInput.split('/pub')[0];
-    fetchUrl = `${base}/pub?gid=${gid}&single=true&output=csv`;
+  if (sheetId.startsWith('2PACX-') || sheetId.includes('/pub')) {
+    const base = rawInput.split('/pub')[0];
+    fetchUrl = `${base}/pub?gid=${gid}&single=true&output=csv&_t=${timestamp}`;
   } else {
-    const sheetTabName = tournament === 'men' ? 'Purse Men' : 'Purse Women';
-    fetchUrl = `https://docs.google.com/spreadsheets/d/${sheetInput}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(
-      sheetTabName
-    )}`;
+    // Direct Google Spreadsheet export (Instant live updates with ZERO CDN delay!)
+    fetchUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv&gid=${gid}&_t=${timestamp}`;
   }
 
   try {
-    const response = await fetch(fetchUrl);
+    const response = await fetch(fetchUrl, {
+      cache: 'no-store',
+      headers: {
+        'Pragma': 'no-cache',
+        'Cache-Control': 'no-cache',
+      },
+    });
     if (!response.ok) {
       throw new Error(`HTTP error ${response.status}: Failed to fetch sheet data`);
     }
@@ -119,15 +155,19 @@ export async function fetchPurseData(tournament: 'men' | 'women'): Promise<Sheet
 
     const parsedTeams = parseTeamsFromCSV(rows);
 
+    if (parsedTeams.length > 0) {
+      setCachedPurse(tournament, parsedTeams);
+    }
+
     return {
-      teams: parsedTeams.length > 0 ? parsedTeams : defaultTeams,
+      teams: parsedTeams.length > 0 ? parsedTeams : cached,
       source: 'google-sheets',
       lastUpdated: new Date().toLocaleTimeString(),
     };
   } catch (err: unknown) {
     console.warn(`Failed to fetch Google Sheet for ${tournament}:`, err);
     return {
-      teams: defaultTeams,
+      teams: cached,
       source: 'mock-data',
       lastUpdated: new Date().toLocaleTimeString(),
       error: err instanceof Error ? err.message : 'Unknown sheet fetch error',
@@ -214,7 +254,11 @@ function parseTeamsFromCSV(rows: string[][]): TeamPurse[] {
         remainingPurse = Math.max(0, 100000 - totalSpent);
       }
 
-      const teamColor = TEAM_COLORS[rawTeamName.toUpperCase()] || '#f59e0b';
+      // Match base name for color lookup (e.g. "RGC KINGS - foo" matches "RGC KINGS")
+      const baseKey = Object.keys(TEAM_COLORS).find((k) =>
+        rawTeamName.toUpperCase().includes(k)
+      );
+      const teamColor = (baseKey && TEAM_COLORS[baseKey]) || '#f59e0b';
 
       teams.push({
         id: teamId,

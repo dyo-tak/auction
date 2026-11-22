@@ -3,9 +3,8 @@ import { Player, TeamPurse } from './types';
 import { fetchPurseData } from './services/sheets';
 import { SAMPLE_PLAYERS_BY_CATEGORY } from './data/mockData';
 import { Navbar, ActiveTab } from './components/Navbar';
-import { ViewerView } from './components/Viewer/ViewerView';
 import { PurseView } from './components/Purse/PurseView';
-import { ConfigModal } from './components/Admin/ConfigModal';
+import { AdminPanel } from './components/Admin/AdminPanel';
 
 const STORAGE_KEY = 'AUCTION_PERSISTED_STATE_V2';
 
@@ -48,23 +47,58 @@ function getInitialAuctionState(): PersistedAuctionState {
 
 export function App() {
   const [auctionData, setAuctionData] = useState<PersistedAuctionState>(getInitialAuctionState);
-  const [activeTab, setActiveTab] = useState<ActiveTab>('wheel');
-  const [configModalOpen, setConfigModalOpen] = useState<boolean>(false);
+  const [isAdminRoute, setIsAdminRoute] = useState<boolean>(() => {
+    const path = window.location.pathname.toLowerCase();
+    const search = window.location.search.toLowerCase();
+    const hash = window.location.hash.toLowerCase();
+    return path.includes('/admin') || search.includes('admin') || hash.includes('admin');
+  });
+  const [activeTab, setActiveTab] = useState<ActiveTab>('purse-men');
   const [teams, setTeams] = useState<TeamPurse[]>([]);
 
-  // Persist auction wheel state to localStorage
+  // Check URL routing on load and popstate
+  useEffect(() => {
+    const handleLocationChange = () => {
+      const path = window.location.pathname.toLowerCase();
+      const search = window.location.search.toLowerCase();
+      const hash = window.location.hash.toLowerCase();
+
+      const admin = path.includes('/admin') || search.includes('admin') || hash.includes('admin');
+      setIsAdminRoute(admin);
+
+      if (search.includes('purse-women') || hash.includes('purse-women')) {
+        setActiveTab('purse-women');
+      } else {
+        setActiveTab('purse-men');
+      }
+    };
+
+    window.addEventListener('popstate', handleLocationChange);
+    return () => window.removeEventListener('popstate', handleLocationChange);
+  }, []);
+
+  // Save auction state to localStorage
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(auctionData));
   }, [auctionData]);
 
-  // Load teams for dropdown
+  // Load teams for Admin winning modal dropdown
   useEffect(() => {
     fetchPurseData('men').then((res) => {
-      setTeams(res.teams);
+      if (res.teams && res.teams.length > 0) {
+        setTeams(res.teams);
+      }
     });
   }, []);
 
-  // Handle Category Change
+  // Navigation helpers
+  const handleNavigateViewer = () => {
+    setIsAdminRoute(false);
+    const base = window.location.pathname.replace(/\/admin\/?$/, '') || '/auction/';
+    window.history.pushState(null, '', base);
+  };
+
+  // Category & Player management
   const handleCategoryChange = (newCat: string) => {
     const defaultNames = SAMPLE_PLAYERS_BY_CATEGORY[newCat] || [];
     const newPlayers: Player[] = defaultNames.map((name, i) => ({
@@ -82,7 +116,6 @@ export function App() {
     });
   };
 
-  // Reset to default reference players for current category
   const handleResetCategoryDefaults = (cat: string) => {
     const defaultNames = SAMPLE_PLAYERS_BY_CATEGORY[cat] || [];
     const newPlayers: Player[] = defaultNames.map((name, i) => ({
@@ -100,7 +133,6 @@ export function App() {
     }));
   };
 
-  // Add players from Excel paste
   const handleAddPlayers = (names: string[]) => {
     const newPlayers: Player[] = names.map((name) => ({
       id: `p-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
@@ -115,7 +147,6 @@ export function App() {
     }));
   };
 
-  // Move to Sold
   const handleMoveToSold = (player: Player, teamName?: string, bidAmount?: number) => {
     const updatedInAuction = auctionData.inAuction.filter((p) => p.id !== player.id);
     const updatedUnsold = auctionData.unsold.filter((p) => p.id !== player.id);
@@ -134,7 +165,6 @@ export function App() {
     }));
   };
 
-  // Move to Unsold
   const handleMoveToUnsold = (player: Player) => {
     const updatedInAuction = auctionData.inAuction.filter((p) => p.id !== player.id);
     const unsoldPlayer: Player = {
@@ -149,7 +179,6 @@ export function App() {
     }));
   };
 
-  // Move back to In Auction (Return to wheel)
   const handleMoveBackToAuction = (player: Player) => {
     const updatedSold = auctionData.sold.filter((p) => p.id !== player.id);
     const updatedUnsold = auctionData.unsold.filter((p) => p.id !== player.id);
@@ -166,7 +195,6 @@ export function App() {
     }));
   };
 
-  // Re-add all unsold to in auction
   const handleReaddUnsold = () => {
     if (auctionData.unsold.length === 0) return;
     const readded: Player[] = auctionData.unsold.map((p) => ({
@@ -181,7 +209,6 @@ export function App() {
     }));
   };
 
-  // Clear current round
   const handleClearCategory = () => {
     setAuctionData((prev) => ({
       ...prev,
@@ -195,19 +222,17 @@ export function App() {
     <div className="min-h-screen bg-[#0b0f19] text-slate-100 flex flex-col font-sans">
       <Navbar
         activeTab={activeTab}
+        isAdminRoute={isAdminRoute}
         onTabChange={(tab) => {
-          if (tab === 'admin') {
-            setConfigModalOpen(true);
-          } else {
-            setActiveTab(tab);
-          }
+          setActiveTab(tab);
         }}
-        isFirebase={false}
+        onNavigateViewer={handleNavigateViewer}
       />
 
       <main className="flex-1 pb-12">
-        {activeTab === 'wheel' && (
-          <ViewerView
+        {isAdminRoute ? (
+          /* Wheel and all management only shown on Admin route (/auction/admin) */
+          <AdminPanel
             currentCategory={auctionData.currentCategory}
             inAuction={auctionData.inAuction}
             sold={auctionData.sold}
@@ -215,7 +240,6 @@ export function App() {
             teams={teams}
             onCategoryChange={handleCategoryChange}
             onAddPlayers={handleAddPlayers}
-            onSpinEnd={() => {}}
             onMoveToSold={handleMoveToSold}
             onMoveToUnsold={handleMoveToUnsold}
             onMoveBackToAuction={handleMoveBackToAuction}
@@ -223,22 +247,18 @@ export function App() {
             onClearCategory={handleClearCategory}
             onResetCategoryDefaults={handleResetCategoryDefaults}
           />
+        ) : (
+          /* Viewer endpoint (/auction): Strictly displays Purse Men & Purse Women */
+          <div>
+            {activeTab === 'purse-men' && <PurseView tournament="men" />}
+            {activeTab === 'purse-women' && <PurseView tournament="women" />}
+          </div>
         )}
-
-        {activeTab === 'purse-men' && <PurseView tournament="men" />}
-
-        {activeTab === 'purse-women' && <PurseView tournament="women" />}
       </main>
-
-      {/* Settings Modal (available from navbar gear/admin button) */}
-      <ConfigModal
-        isOpen={configModalOpen}
-        onClose={() => setConfigModalOpen(false)}
-      />
 
       {/* Footer */}
       <footer className="border-t border-slate-900 bg-slate-950/80 py-5 text-center text-xs text-slate-500">
-        <p>Cricket Auction 2026 • Live Player Auction & Team Purse Platform</p>
+        <p>Cricket Auction 2026 • Live Team Purse Platform</p>
       </footer>
     </div>
   );
